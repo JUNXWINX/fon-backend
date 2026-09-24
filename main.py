@@ -15,7 +15,7 @@ HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"}
 
 # --- URLs des modèles Hugging Face ---
 # Remplace TON_USERNAME par ton pseudo Hugging Face
-ASR_MODEL = "TON_USERNAME/fon-asr-fongbe-v2"
+ASR_MODEL = "JunxWinx/fon-asr-fongbe-v2"
 TRANSLATION_MODEL = "masakhane/m2m100_418M_fon_fr_rel_news"
 TTS_MODEL = "facebook/mms-tts-fon"
 
