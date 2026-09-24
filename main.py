@@ -1,51 +1,81 @@
-# main.py
 import os
-import torch
-import soundfile as sf
+import requests
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
-from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
 
 app = FastAPI(title="API Assistant Fon")
 
-# Configuration de l'appareil (CPU sur ClawCloud)
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"Utilisation de l'appareil : {device}")
+# --- Configuration ---
+HF_TOKEN = os.environ.get("HF_TOKEN")
+if not HF_TOKEN:
+    raise ValueError("HF_TOKEN non défini")
 
-# Chargement du modèle fine-tuné
-MODEL_PATH = "/app/model/fon-asr-final-v2"
-print("Chargement du modèle ASR...")
-processor = Wav2Vec2Processor.from_pretrained(MODEL_PATH)
-model = Wav2Vec2ForCTC.from_pretrained(MODEL_PATH).to(device)
-print("Modèle chargé avec succès !")
+HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"}
 
-# Modèle pour les requêtes texte
+# --- URLs des modèles Hugging Face ---
+# Remplace TON_USERNAME par ton pseudo Hugging Face
+ASR_MODEL = "TON_USERNAME/fon-asr-fongbe-v2"
+TRANSLATION_MODEL = "masakhane/m2m100_418M_fon_fr_rel_news"
+TTS_MODEL = "facebook/mms-tts-fon"
+
+ASR_URL = f"https://api-inference.huggingface.co/models/{ASR_MODEL}"
+TRANS_URL = f"https://api-inference.huggingface.co/models/{TRANSLATION_MODEL}"
+TTS_URL = f"https://api-inference.huggingface.co/models/{TTS_MODEL}"
+
+# --- Modèles de données ---
 class TextRequest(BaseModel):
     text: str
 
+# --- Endpoints ---
+
 @app.get("/")
-def read_root():
-    return {"status": "API Fon opérationnelle"}
+def racine():
+    return {"status": "API Fon opérationnelle", "models": {
+        "asr": ASR_MODEL,
+        "translation": TRANSLATION_MODEL,
+        "tts": TTS_MODEL
+    }}
 
 @app.post("/transcribe")
-async def transcribe_audio(file: UploadFile = File(...)):
+async def transcrire_audio(file: UploadFile = File(...)):
+    """Reçoit un audio en fon, retourne la transcription."""
     try:
-        # Sauvegarde temporaire du fichier audio
-        temp_path = f"/tmp/{file.filename}"
-        with open(temp_path, "wb") as buffer:
-            buffer.write(await file.read())
-        
-        # Chargement et transcription
-        audio, sr = sf.read(temp_path)
-        inputs = processor(audio, sampling_rate=sr, return_tensors="pt").to(device)
-        
-        with torch.no_grad():
-            logits = model(inputs.input_values).logits
-        
-        pred_ids = torch.argmax(logits, dim=-1)
-        text = processor.batch_decode(pred_ids)[0]
-        
-        os.remove(temp_path)
-        return {"text": text}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        audio_data = await file.read()
+        response = requests.post(ASR_URL, headers=HEADERS, data=audio_data, timeout=60)
+        if response.status_code != 200:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Erreur ASR: {str(e)}")
+
+@app.post("/translate")
+async def traduire(request: TextRequest):
+    """Traduit un texte du fon vers le français."""
+    try:
+        payload = {
+            "inputs": request.text,
+            "parameters": {"src_lang": "fon", "tgt_lang": "fra"}
+        }
+        response = requests.post(TRANS_URL, headers=HEADERS, json=payload, timeout=60)
+        if response.status_code != 200:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+        result = response.json()
+        # L'API retourne une liste de dicts
+        if isinstance(result, list) and len(result) > 0:
+            return {"translation": result[0].get("translation_text", "")}
+        return result
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Erreur traduction: {str(e)}")
+
+@app.post("/speak")
+async def parler(request: TextRequest):
+    """Génère un audio à partir d'un texte en fon."""
+    try:
+        payload = {"inputs": request.text}
+        response = requests.post(TTS_URL, headers=HEADERS, json=payload, timeout=60)
+        if response.status_code != 200:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+        return Response(content=response.content, media_type="audio/wav")
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Erreur TTS: {str(e)}")
